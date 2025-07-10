@@ -140,11 +140,26 @@ class OpenVINOQuantizer(Quantizer):
     def get_nncf_quantization_setup(
         self, model: torch.fx.GraphModule, nncf_graph: NNCFGraph
     ) -> quantization.quantizer_setup.SingleConfigQuantizerSetup:
+        """
+        Get the NNCF quantization setup for a given model.
+    
+        :param model: model to be quantized.
+        :param nncf_graph: NNCF graph.
+        :return NNCF Quantization setup for the given model.
+        """
         self._algo._set_backend_entity(model)
         return self._algo.find_quantization_setup(model, nncf_graph)
 
     def _annotate_weight_compression(self, model: torch.fx.GraphModule, graph: torch.fx.Graph, nncf_graph: NNCFGraph, 
-                                     node_vs_torch_annotation: DefaultDict[torch.fx.Node, QuantizationAnnotation]):
+                                     node_vs_torch_annotation: DefaultDict[torch.fx.Node, QuantizationAnnotation]) -> None:
+        """
+        Annotate nodes for Weights-only quantization flow.
+    
+        :param model: model to be quantized.
+        :param graph: FX Graph.
+        :param nncf_graph: NNCF graph.
+        :param node_vs_torch_annotation: mapping between node and annotation.
+        """
         self._algo.set_backend_entity(model)
         nodes_to_compress = self._algo.get_nodes_to_compress(nncf_graph)
 
@@ -158,28 +173,51 @@ class OpenVINOQuantizer(Quantizer):
                 qconfig=qconfig,
                 directly_quantized_operator_node_names=[node]
             )
-            self._annotate_quantization_point(qp, graph, nncf_graph, node_vs_torch_annotation, weights_only=True)
+            self._annotate_from_quantization_point(qp, graph, nncf_graph, node_vs_torch_annotation, weights_only=True)
     
     def _annotate_post_training_quantization(self, model: torch.fx.GraphModule, graph: torch.fx.Graph, nncf_graph: NNCFGraph, 
-                                             node_vs_torch_annotation: DefaultDict[torch.fx.Node, QuantizationAnnotation]):
+                                             node_vs_torch_annotation: DefaultDict[torch.fx.Node, QuantizationAnnotation]) -> None:
+        """
+        Annotate nodes for PTQ flow.
+    
+        :param model: model to be quantized.
+        :param graph: FX Graph.
+        :param nncf_graph: NNCF graph.
+        :param node_vs_torch_annotation: mapping between node and annotation.
+        """
         quantization_setup = self.get_nncf_quantization_setup(model, nncf_graph)
 
         for qp in quantization_setup.quantization_points.values():
-            self._annotate_quantization_point(qp, graph, nncf_graph, node_vs_torch_annotation)
+            self._annotate_from_quantization_point(qp, graph, nncf_graph, node_vs_torch_annotation)
 
         for quantizer_ids in quantization_setup.unified_scale_groups.values():
             self._annotate_unified_scale_group(quantizer_ids, graph, nncf_graph, quantization_setup, node_vs_torch_annotation)
 
     def _create_quantizer_config_for_wc(self, qmode: int) -> QuantizerConfig:
+        """
+        Create a quantizer config from weights compression parameter.
+
+        :param qmode: Quantization mode to be used for setting quantizer config.
+        :return quantizer config with given qmode.
+        """         
         num_bits = 4 if qmode in [QuantizationMode.INT4_SYM_WC, QuantizationMode.INT4_ASYM_WC] else 8
         qmode = QuantizationScheme.SYMMETRIC if qmode in [
             QuantizationMode.INT4_SYM_WC, QuantizationMode.INT8_SYM_WC
         ] else QuantizationScheme.ASYMMETRIC
         return QuantizerConfig(num_bits=num_bits, mode=qmode)
 
-    def _annotate_quantization_point(self, qp: quantization.quantizer_setup.QuantizationPointBase, graph: torch.fx.Graph, 
+    def _annotate_from_quantization_point(self, qp: quantization.quantizer_setup.QuantizationPointBase, graph: torch.fx.Graph, 
                                      nncf_graph: NNCFGraph, node_vs_torch_annotation: DefaultDict[torch.fx.Node, QuantizationAnnotation], 
-                                     weights_only: bool=False):
+                                     weights_only: bool=False) -> None:
+        """
+        Annotate nodes with unified scale group information.
+
+        :param qp: Quantization point to be converted to torch annotation.
+        :param graph: FX Graph.
+        :param nncf_graph: NNCF graph.
+        :param node_vs_torch_annotation: mapping between node and annotation.
+        :param weights_only: Flag indicate weights only quantization flow.
+        """                             
         edge_or_node, annotation = self._get_edge_or_node_and_annotation(
             graph, nncf_graph, qp, node_vs_torch_annotation
         )
@@ -189,7 +227,16 @@ class OpenVINOQuantizer(Quantizer):
 
     def _annotate_unified_scale_group(self, quantizer_ids: List[int], graph: torch.fx.Graph, nncf_graph: NNCFGraph, 
                                       quantization_setup: quantization.quantizer_setup.SingleConfigQuantizerSetup, 
-                                      node_vs_torch_annotation: DefaultDict[torch.fx.Node, QuantizationAnnotation]):
+                                      node_vs_torch_annotation: DefaultDict[torch.fx.Node, QuantizationAnnotation]) -> None:
+        """
+        Annotate nodes with unified scale group information.
+
+        :param quantizer_ids: List of quantizer id for quantizer locations.
+        :param graph: FX Graph.
+        :param nncf_graph: NNCF graph.
+        :param quantization_setup: Quantization setup which contains quantizer information.
+        :param node_vs_torch_annotation: mapping between node and annotation.
+        """
         root_id = self._get_unified_scales_root_quantizer_id(nncf_graph, quantizer_ids, quantization_setup)
         root_qp = quantization_setup.quantization_points[root_id]
 
@@ -215,6 +262,12 @@ class OpenVINOQuantizer(Quantizer):
 
 
     def annotate(self, model: torch.fx.GraphModule) -> torch.fx.GraphModule:
+        """
+        Annotate nodes with quantization information such as qmode, observer, q_min, q_max etc.
+
+        :param model: model to be quantized.
+        :return: model annotated with quantization information.
+        """
         nncf_graph = nncf_fx.nncf_graph_builder.GraphConverter.create_nncf_graph(model)
         graph = model.graph
         node_vs_torch_annotation: DefaultDict[torch.fx.Node, QuantizationAnnotation] = defaultdict(QuantizationAnnotation)
