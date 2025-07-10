@@ -56,7 +56,6 @@ class QuantizationMode(Enum):
     INT4_SYM_WC = "int4_sym"
     INT4_ASYM_WC = "int4_asym"
 
-
 class OpenVINOQuantizer(Quantizer):
     """
     Implementation of the Torch AO quantizer which annotates models with quantization annotations
@@ -144,82 +143,93 @@ class OpenVINOQuantizer(Quantizer):
         self._algo._set_backend_entity(model)
         return self._algo.find_quantization_setup(model, nncf_graph)
 
+    def _annotate_weight_compression(self, model: torch.fx.GraphModule, graph: torch.fx.Graph, nncf_graph: NNCFGraph, 
+                                     node_vs_torch_annotation: DefaultDict[torch.fx.Node, QuantizationAnnotation]):
+        self._algo.set_backend_entity(model)
+        nodes_to_compress = self._algo.get_nodes_to_compress(nncf_graph)
+
+        for node in nodes_to_compress:
+            insertion_point = quantization.quantizer_setup.WeightQuantizationInsertionPoint(
+                target_node_name=node.node_name
+            )
+            qconfig = self._create_quantizer_config_for_wc(self.mode)
+            qp = quantization.quantizer_setup.SingleConfigQuantizationPoint(
+                qip=insertion_point,
+                qconfig=qconfig,
+                directly_quantized_operator_node_names=[node]
+            )
+            self._annotate_quantization_point(qp, graph, nncf_graph, node_vs_torch_annotation, weights_only=True)
+    
+    def _annotate_post_training_quantization(self, model: torch.fx.GraphModule, graph: torch.fx.Graph, nncf_graph: NNCFGraph, 
+                                             node_vs_torch_annotation: DefaultDict[torch.fx.Node, QuantizationAnnotation]):
+        quantization_setup = self.get_nncf_quantization_setup(model, nncf_graph)
+
+        for qp in quantization_setup.quantization_points.values():
+            self._annotate_quantization_point(qp, graph, nncf_graph, node_vs_torch_annotation)
+
+        for quantizer_ids in quantization_setup.unified_scale_groups.values():
+            self._annotate_unified_scale_group(quantizer_ids, graph, nncf_graph, quantization_setup, node_vs_torch_annotation)
+
+    def _create_quantizer_config_for_wc(self, qmode: int) -> QuantizerConfig:
+        num_bits = 4 if qmode in [QuantizationMode.INT4_SYM_WC, QuantizationMode.INT4_ASYM_WC] else 8
+        qmode = QuantizationScheme.SYMMETRIC if qmode in [
+            QuantizationMode.INT4_SYM_WC, QuantizationMode.INT8_SYM_WC
+        ] else QuantizationScheme.ASYMMETRIC
+        return QuantizerConfig(num_bits=num_bits, mode=qmode)
+
+    def _annotate_quantization_point(self, qp: quantization.quantizer_setup.QuantizationPointBase, graph: torch.fx.Graph, 
+                                     nncf_graph: NNCFGraph, node_vs_torch_annotation: DefaultDict[torch.fx.Node, QuantizationAnnotation], 
+                                     weights_only: bool=False):
+        edge_or_node, annotation = self._get_edge_or_node_and_annotation(
+            graph, nncf_graph, qp, node_vs_torch_annotation
+        )
+        group_size = getattr(self._algo, "_group_size", None)
+        qspec = self._get_torch_ao_qspec_from_nncf_config(qp, group_size=group_size, weights_only=weights_only)
+        self._fill_torch_ao_annotation(edge_or_node, qspec, annotation)
+
+    def _annotate_unified_scale_group(self, quantizer_ids: List[int], graph: torch.fx.Graph, nncf_graph: NNCFGraph, 
+                                      quantization_setup: quantization.quantizer_setup.SingleConfigQuantizerSetup, 
+                                      node_vs_torch_annotation: DefaultDict[torch.fx.Node, QuantizationAnnotation]):
+        root_id = self._get_unified_scales_root_quantizer_id(nncf_graph, quantizer_ids, quantization_setup)
+        root_qp = quantization_setup.quantization_points[root_id]
+
+        if any(root_qp.qconfig != quantization_setup.quantization_points[qid].qconfig for qid in quantizer_ids):
+            qps = [quantization_setup.quantization_points[qid] for qid in quantizer_ids]
+            raise nncf.InternalError(
+                "Different quantization configs are set to one unified scale group:"
+                f"{[(qp.insertion_point.__dict__, str(qp.qconfig)) for qp in qps]}"
+            )
+
+        root_node = nncf_fx.node_utils.get_graph_node_by_name(graph, root_qp.insertion_point.target_node_name)
+        root_edge_or_node = self._get_edge_or_node(root_node, root_qp, nncf_graph)
+
+        for qid in quantizer_ids:
+            if qid == root_id:
+                continue
+
+            qspec = SharedQuantizationSpec(root_edge_or_node)
+            qp = quantization_setup.quantization_points[qid]
+            edge_or_node, annotation = self._get_edge_or_node_and_annotation(graph, nncf_graph, qp, node_vs_torch_annotation)
+            self._fill_torch_ao_annotation(edge_or_node, qspec, annotation)
+
+
+
     def annotate(self, model: torch.fx.GraphModule) -> torch.fx.GraphModule:
         nncf_graph = nncf_fx.nncf_graph_builder.GraphConverter.create_nncf_graph(model)
-        
         graph = model.graph
-        node_vs_torch_annotation: DefaultDict[torch.fx.Node, QuantizationAnnotation] = (
-            defaultdict(QuantizationAnnotation)
-        )
-        # Serperate into annotation for quantize and compress
-        if(self.mode in self.wc_modes):
-            self._algo.set_backend_entity(model)
-            nodes_to_compress = self._algo.get_nodes_to_compress(nncf_graph)
-            for node in nodes_to_compress:
-                quantization_insertion_point = quantization.quantizer_setup.WeightQuantizationInsertionPoint(target_node_name=node.node_name)
-                group_size = self._algo._group_size
-                num_bits = 4 if self.mode in [QuantizationMode.INT4_SYM_WC,QuantizationMode.INT4_ASYM_WC] else 8
-                qmode = QuantizationScheme.SYMMETRIC if self.mode in [QuantizationMode.INT4_SYM_WC,QuantizationMode.INT8_SYM_WC] else QuantizationScheme.ASYMMETRIC
-                nncf_qconfig = QuantizerConfig(num_bits=num_bits, mode=qmode)
-                qp = quantization.quantizer_setup.SingleConfigQuantizationPoint(qip=quantization_insertion_point, qconfig=nncf_qconfig, directly_quantized_operator_node_names=[node])
-                edge_or_node, annotation = self._get_edge_or_node_and_annotation(
-                    graph, nncf_graph, qp, node_vs_torch_annotation
-                )
-                qspec: QuantizationSpecBase = self._get_torch_ao_qspec_from_nncf_config(qp, group_size=group_size, weights_only=True)
-                self._fill_torch_ao_annotation(edge_or_node, qspec, annotation)
+        node_vs_torch_annotation: DefaultDict[torch.fx.Node, QuantizationAnnotation] = defaultdict(QuantizationAnnotation)
+
+        if self.mode in self.wc_modes:
+            self._annotate_weight_compression(model, graph, nncf_graph, node_vs_torch_annotation)
         else:
-            quantization_setup = self.get_nncf_quantization_setup(model, nncf_graph)
-
-            for qp in quantization_setup.quantization_points.values():
-                edge_or_node, annotation = self._get_edge_or_node_and_annotation(
-                    graph, nncf_graph, qp, node_vs_torch_annotation
-                )
-                qspec: QuantizationSpecBase = self._get_torch_ao_qspec_from_nncf_config(qp)
-                self._fill_torch_ao_annotation(edge_or_node, qspec, annotation)
-
-            for quantizer_ids in quantization_setup.unified_scale_groups.values():
-
-                root_quantizer_id = self._get_unified_scales_root_quantizer_id(
-                    nncf_graph, quantizer_ids, quantization_setup
-                )
-                root_qp = quantization_setup.quantization_points[root_quantizer_id]
-
-                if any(
-                    root_qp.qconfig != quantization_setup.quantization_points[q_id].qconfig
-                    for q_id in quantizer_ids
-                ):
-                    qps = [
-                        quantization_setup.quantization_points[q_id]
-                        for q_id in quantizer_ids
-                    ]
-                    msg = (
-                        "Different quantization configs are set to one unified scale group:"
-                        f"{[(qp.insertion_point.__dict__, str(qp.qconfig)) for qp in qps]}"
-                    )
-                    raise nncf.InternalError(msg)
-
-                root_target_node = nncf_fx.node_utils.get_graph_node_by_name(
-                    graph, root_qp.insertion_point.target_node_name
-                )
-                root_edge_or_node = self._get_edge_or_node(
-                    root_target_node, root_qp, nncf_graph
-                )
-
-                for quantizer_id in quantizer_ids:
-                    if quantizer_id == root_quantizer_id:
-                        continue
-
-                    qspec = SharedQuantizationSpec(root_edge_or_node)
-                    qp = quantization_setup.quantization_points[quantizer_id]
-                    edge_or_node, annotation = self._get_edge_or_node_and_annotation(
-                        graph, nncf_graph, qp, node_vs_torch_annotation
-                    )
-                    self._fill_torch_ao_annotation(edge_or_node, qspec, annotation)
+            self._annotate_post_training_quantization(model, graph, nncf_graph, node_vs_torch_annotation)
 
         for node, annotation in node_vs_torch_annotation.items():
             assert QUANT_ANNOTATION_KEY not in node.meta
             node.meta[QUANT_ANNOTATION_KEY] = annotation
+
         return model
+
 
     @staticmethod
     def _get_unified_scales_root_quantizer_id(
