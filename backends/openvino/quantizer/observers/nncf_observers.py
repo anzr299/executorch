@@ -6,58 +6,84 @@
 
 # mypy: disable-error-code=import-not-found
 
+from abc import ABC, abstractmethod
 from typing import Optional, Tuple
 
 import torch
-from torch.ao.quantization.observer import MappingType
-from torch.ao.quantization.observer import ObserverBase
-from torch.ao.quantization.observer import PerAxis
-from torch.ao.quantization.observer import PerGroup
-from torch.ao.quantization.observer import get_block_size
-from torch.ao.quantization.pt2e._affine_quantization import _get_reduction_params
 
-from nncf.experimental.torch.fx.node_utils import get_tensor_constant_from_node
-from nncf.experimental.torch.fx.transformations import constant_update_fn
-from nncf.experimental.torch.fx.transformations import module_insertion_transformation_builder
-from nncf.parameters import CompressWeightsMode
-from nncf.quantization.algorithms.weight_compression.config import WeightCompressionConfig
-from nncf.quantization.algorithms.weight_compression.weight_lowering import do_integer_quantization
-from nncf.tensor.tensor import Tensor
-from nncf.torch.graph.transformations.commands import PTTargetPoint
-from nncf.torch.graph.transformations.commands import TargetType
-from nncf.torch.quantization.layers import BaseWeightsDecompressor
-from nncf.torch.quantization.layers import INT4AsymmetricWeightsDecompressor
-from nncf.torch.quantization.layers import INT4SymmetricWeightsDecompressor
-from nncf.torch.quantization.layers import INT8AsymmetricWeightsDecompressor
-from nncf.torch.quantization.layers import INT8SymmetricWeightsDecompressor
+from nncf.experimental.torch.fx.node_utils import (  # type: ignore[import-untyped]
+    get_tensor_constant_from_node,
+)
+from nncf.experimental.torch.fx.transformations import (  # type: ignore[import-untyped]
+    constant_update_fn,
+    module_insertion_transformation_builder,
+)
+from nncf.parameters import CompressWeightsMode  # type: ignore[import-untyped]
+from nncf.quantization.algorithms.weight_compression.config import (  # type: ignore[import-untyped]
+    WeightCompressionConfig,
+)
+from nncf.quantization.algorithms.weight_compression.weight_lowering import (  # type: ignore[import-untyped]
+    do_integer_quantization,
+)
+from nncf.tensor.tensor import Tensor  # type: ignore[import-untyped]
+from nncf.torch.graph.transformations.commands import (  # type: ignore[import-untyped]
+    PTTargetPoint,
+    TargetType,
+)
+from nncf.torch.quantization.layers import (  # type: ignore[import-untyped]
+    BaseWeightsDecompressor,
+    INT4AsymmetricWeightsDecompressor,
+    INT4SymmetricWeightsDecompressor,
+    INT8AsymmetricWeightsDecompressor,
+    INT8SymmetricWeightsDecompressor,
+)
+from torchao.quantization.pt2e import (
+    get_block_size,
+    Granularity,
+    MappingType,
+    ObserverBase,
+    PerAxis,
+    PerGroup,
+)
+from torchao.quantization.pt2e._affine_quantization import _get_reduction_params
 
 
-class PTWeightCompressionObserverBase(ObserverBase):
+class PTWeightCompressionObserverBase(ObserverBase, ABC):
     """
-    Implementation for a common NNCF observer base class. This is used to define common NNCF behaviour such as 
+    Implementation for a common NNCF observer base class. This is used to define common NNCF behaviour such as
     decompression subgraph and Scale, weights calculations.
     """
-    def calculate_qparams(self, weight: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+
+    def calculate_qparams(  # type: ignore[override]
+        self, weight: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """
         Calculate quantization parameters such as scale, quantized weight and zero point.
 
         :param weight: FP weight to be used for calculating qparams.
         :return: quantization params quantized weight, scale and zero point
         """
+        self.granularity: Granularity
         self.block_size = get_block_size(weight.shape, self.granularity)
         _, reduction_dims = _get_reduction_params(self.block_size, weight.size())
-        reduction_dims = reduction_dims[0] - 1 if isinstance(self.granularity, PerGroup) else reduction_dims
+        reduction_dims = (
+            reduction_dims[0] - 1
+            if isinstance(self.granularity, PerGroup)
+            else reduction_dims
+        )
 
         q_weight, scale, zp = do_integer_quantization(
             Tensor(weight), self.wc_config, reduction_axes=reduction_dims
         )
         zp = zp.data if zp is not None else None
         return q_weight.data, scale.data, zp
-    
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return x
 
-    def convert(self, model: torch.fx.GraphModule, observer_node: torch.fx.Node) -> None:
+    def convert(
+        self, model: torch.fx.GraphModule, observer_node: torch.fx.Node
+    ) -> None:
         """
         Defines the alternate path for transforming the model after prepare and calibration steps.
 
@@ -93,11 +119,17 @@ class PTWeightCompressionObserverBase(ObserverBase):
         )(model)
 
         decomp_node = observer_node.args[0]
-        observer_node.replace_all_uses_with(decomp_node)
+        observer_node.replace_all_uses_with(decomp_node)  # type: ignore[arg-type]
         model.graph.erase_node(observer_node)
-    
-    @classmethod
-    def _create_decompressor(self, scale: torch.Tensor, zero_point: torch.Tensor, q_weight: torch.Tensor, original_weight: torch.Tensor) -> BaseWeightsDecompressor:
+
+    @abstractmethod
+    def _create_decompressor(
+        self,
+        scale: torch.Tensor,
+        zero_point: Optional[torch.Tensor],
+        q_weight: torch.Tensor,
+        original_weight: torch.Tensor,
+    ) -> BaseWeightsDecompressor:
         """
         Used to return the respective NNCF decompressor for different types of quantization.
 
@@ -110,36 +142,55 @@ class PTWeightCompressionObserverBase(ObserverBase):
         pass
 
 
-from torch.ao.quantization.observer import Granularity
-
-
 class PTPerBlockParamObserver(PTWeightCompressionObserverBase):
     """
-    This class defines the behavior for Int4 WC which has per-group granularity.
+    This class defines the behavior for INT4 Weight Compression which has per-group granularity.
     """
-    def __init__(self, granularity: Granularity, mapping_type: MappingType, target_dtype: torch.dtype, *args, **kwargs) -> None:
+
+    def __init__(
+        self,
+        granularity: Granularity,
+        mapping_type: MappingType,
+        target_dtype: torch.dtype,
+        *args,
+        **kwargs,
+    ) -> None:
         """
         :param granularity: Granularity object which is expected to be only PerGroup. This contains the group_size information
-        :param mapping_type: MappingType.SYMMETRIC and MappingType.ASYMMETRIC are supported types for this argument for symmetric or asymmetric quantization.  
+        :param mapping_type: MappingType.SYMMETRIC and MappingType.ASYMMETRIC are supported types for this argument for symmetric or asymmetric quantization.
         :param target_dtype: target dtype for quantization such as int8, uint8, etc.
         """
         super().__init__(dtype=target_dtype, is_dynamic=False)
         self.wc_config = None
-        self.granularity = granularity
+        self.granularity: Granularity = granularity
         self.mapping_type = mapping_type
 
-        assert isinstance(self.granularity, PerGroup), "Only PerGroup granularity is supported"
+        assert isinstance(
+            self.granularity, PerGroup
+        ), "Only PerGroup granularity is supported"
         qmode = (
             CompressWeightsMode.INT4_ASYM
             if self.mapping_type == MappingType.ASYMMETRIC
             else CompressWeightsMode.INT4_SYM
         )
-        self.wc_config = WeightCompressionConfig(mode=qmode, group_size=self.granularity.group_size)
+        self.wc_config = WeightCompressionConfig(
+            mode=qmode, group_size=self.granularity.group_size
+        )
 
-    def _create_decompressor(self, scale: torch.Tensor, zero_point: torch.Tensor, q_weight: torch.Tensor, original_weight: torch.Tensor) -> BaseWeightsDecompressor:
+    def _create_decompressor(
+        self,
+        scale: torch.Tensor,
+        zero_point: Optional[torch.Tensor],
+        q_weight: torch.Tensor,
+        original_weight: torch.Tensor,
+    ) -> BaseWeightsDecompressor:
         if zero_point is not None:
             return INT4AsymmetricWeightsDecompressor(
-                scale, zero_point, q_weight.shape, original_weight.shape, original_weight.dtype
+                scale,
+                zero_point,
+                q_weight.shape,
+                original_weight.shape,
+                original_weight.dtype,
             )
         else:
             return INT4SymmetricWeightsDecompressor(
@@ -151,7 +202,15 @@ class NNCFInt8observer(PTWeightCompressionObserverBase):
     """
     This class defines the behavior for Int8 WC which has per channel granularity.
     """
-    def __init__(self, qscheme: torch.qscheme, dtype: torch.dtype, ch_axis: int = 0, *args, **kwargs) -> None:
+
+    def __init__(
+        self,
+        qscheme: torch.qscheme,
+        dtype: torch.dtype,
+        ch_axis: int = 0,
+        *args,
+        **kwargs,
+    ) -> None:
         """
         :param qscheme: Quantization scheme which is per-channel for Int8 WC.
         :param dtype: dtype for quantization such as int8, uint8, etc..
@@ -168,10 +227,18 @@ class NNCFInt8observer(PTWeightCompressionObserverBase):
             else CompressWeightsMode.INT8_ASYM
         )
         self.wc_config = WeightCompressionConfig(mode=qmode)
-        self.granularity = PerAxis(axis=self.ch_axis)
+        self.granularity: Granularity = PerAxis(axis=self.ch_axis)
 
-    def _create_decompressor(self, scale: torch.Tensor, zero_point: torch.Tensor, q_weight: torch.Tensor, original_weight: torch.Tensor) -> BaseWeightsDecompressor:
+    def _create_decompressor(
+        self,
+        scale: torch.Tensor,
+        zero_point: Optional[torch.Tensor],
+        q_weight: torch.Tensor,
+        original_weight: torch.Tensor,
+    ) -> BaseWeightsDecompressor:
         if zero_point is not None:
-            return INT8AsymmetricWeightsDecompressor(scale, zero_point, original_weight.dtype)
+            return INT8AsymmetricWeightsDecompressor(
+                scale, zero_point, original_weight.dtype
+            )
         else:
             return INT8SymmetricWeightsDecompressor(scale, original_weight.dtype)
