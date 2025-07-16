@@ -34,8 +34,7 @@ from nncf.torch.quantization.layers import INT8SymmetricWeightsDecompressor
 
 class PTWeightCompressionObserverBase(ObserverBase):
     """
-    Implementation for a common NNCF observer base class. This is used to define common NNCF behaviour such as 
-    decompression subgraph and Scale, weights calculations.
+    Base implementation of an NNCF observer that defines the rules for compressing layer weights into the OpenVINO representation.
     """
     def calculate_qparams(self, weight: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """
