@@ -158,6 +158,19 @@ class OpenVINOQuantizer(Quantizer):
         nncf_graph: NNCFGraph,
         node_vs_torch_annotation: DefaultDict[torch.fx.Node, QuantizationAnnotation],
     ) -> DefaultDict[torch.fx.Node, QuantizationAnnotation]:
+        """
+        Annotates the model graph with weight-only quantization specs.
+
+        Identifies compressible nodes in the NNCF graph and attaches the corresponding
+        TorchAO quantization specifications to their weight edges for later transformation.
+
+        :param model: The FX GraphModule to annotate.
+        :param graph: The underlying FX graph.
+        :param nncf_graph: The corresponding NNCF graph.
+        :param node_vs_torch_annotation: A mapping of FX nodes to quantization annotations.
+
+        :return: Updated mapping of FX nodes with weight compression annotations.
+        """
         self._algo.set_backend_entity(model)
         nodes_to_compress = self._algo.get_nodes_to_compress(nncf_graph)
 
@@ -182,6 +195,20 @@ class OpenVINOQuantizer(Quantizer):
         nncf_graph: NNCFGraph,
         node_vs_torch_annotation: DefaultDict[torch.fx.Node, QuantizationAnnotation],
     ) -> DefaultDict[torch.fx.Node, QuantizationAnnotation]:
+        """
+        Annotates the model graph with post-training quantization configurations.
+
+        Converts NNCF quantization points into TorchAO-compatible quantization specs,
+        assigning them to corresponding nodes or edges. Also handles unified scale groups,
+        ensuring shared quantization specs across grouped quantizers with consistent configs.
+
+        :param model: The FX GraphModule to annotate.
+        :param graph: The underlying FX graph.
+        :param nncf_graph: The corresponding NNCF graph.
+        :param node_vs_torch_annotation: A mapping of FX nodes to quantization annotations.
+
+        :return: Updated mapping of FX nodes with post-training quantization annotations.
+        """
         quantization_setup = self.get_nncf_quantization_setup(model, nncf_graph)
 
         for qp in quantization_setup.quantization_points.values():
@@ -313,7 +340,17 @@ class OpenVINOQuantizer(Quantizer):
         target_node: torch.fx.Node,
         nncf_graph: NNCFGraph,
     ):
+        """
+        Returns the FX node corresponding to the weight tensor input of a given operator node.
 
+        Uses the NNCF graph to identify which input port of the target node holds the weight.
+        If multiple weight ports are present, a warning is issued and only the first one is used.
+
+        :param target_node: FX node representing a weighted operation (e.g., Linear, Conv).
+        :param nncf_graph: NNCFGraph used to determine weight port indices.
+
+        :return: Edge represented by a Tuple of (weight_node, target_node), where weight_node is the FX node supplying the weight.
+        """
         nncf_node = nncf_graph.get_node_by_name(target_node.name)
         weights_ports_ids = nncf.torch.model_graph_manager.get_weight_tensor_port_ids(
             nncf_node, nncf_graph

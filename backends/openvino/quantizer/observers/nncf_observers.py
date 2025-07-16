@@ -84,10 +84,29 @@ class PTWeightCompressionObserverBase(ObserverBase, ABC):
         self, model: torch.fx.GraphModule, observer_node: torch.fx.Node
     ) -> None:
         """
-        Defines the alternate path for transforming the model after prepare and calibration steps.
+        Converts the weight observer node into a decompression subgraph after calibration.
 
-        :param model: annotated and calibrated model ready for transformation of observers.
-        :param observer_node: the observer node to be focused on in the transformation.
+        This method is responsible for transforming the model after the quantization preparation
+        and calibration phases. Specifically, it replaces the observer node—which collected
+        statistics for weight quantization—with a compressed weight tensor and a decompression
+        module. The decompression module ensures that the quantized weights are correctly
+        reconstructed at runtime using the calculated quantization parameters.
+
+        Steps performed:
+            1. Extracts the original (FP32) weight tensor from the graph.
+            2. Calculates the quantized weight, scale, and (optionally) zero point using
+            the configured quantization strategy.
+            3. Instantiates a decompressor module to reconstruct the original weights from the quantized values.
+            4. Packs the quantized weight into the format expected by the decompressor.
+            5. Replaces the observer node's constant with the packed quantized weight tensor.
+            6. Inserts the decompressor module after the constant node in the graph.
+            7. Updates the model to route all consumer nodes to use the decompressor output.
+            8. Removes the original observer node from the graph.
+
+        :param model: A `torch.fx.GraphModule` representing the statically traced model
+                    with observer nodes attached and calibrated.
+        :param observer_node: The `torch.fx.Node` corresponding to the observer module for
+                            the weight that is being transformed into a compressed representation.
         """
         weight_node = observer_node.args[0]
         original_weight = get_tensor_constant_from_node(weight_node, model)
