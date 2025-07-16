@@ -200,19 +200,6 @@ class OpenVINOQuantizer(Quantizer):
                 node_vs_torch_annotation,
             )
 
-    def _create_quantizer_config_for_wc(self, qmode: int) -> QuantizerConfig:
-        num_bits = (
-            4
-            if qmode in [QuantizationMode.INT4_SYM_WC, QuantizationMode.INT4_ASYM_WC]
-            else 8
-        )
-        qmode = (
-            QuantizationScheme.SYMMETRIC
-            if qmode in [QuantizationMode.INT4_SYM_WC, QuantizationMode.INT8_SYM_WC]
-            else QuantizationScheme.ASYMMETRIC
-        )
-        return QuantizerConfig(num_bits=num_bits, mode=qmode)
-
     def _annotate_quantization_point(
         self,
         qp: quantization.quantizer_setup.QuantizationPointBase,
