@@ -85,7 +85,6 @@ class PTWeightCompressionObserverBase(ObserverBase, ABC):
     ) -> None:
         """
         Converts the weight observer node into a decompression subgraph after calibration.
-
         This method is responsible for transforming the model after the quantization preparation
         and calibration phases. It replaces the observer node with the quantized weight and a decompression
         module.
