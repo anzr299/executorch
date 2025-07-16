@@ -87,10 +87,8 @@ class PTWeightCompressionObserverBase(ObserverBase, ABC):
         Converts the weight observer node into a decompression subgraph after calibration.
 
         This method is responsible for transforming the model after the quantization preparation
-        and calibration phases. Specifically, it replaces the observer node—which collected
-        statistics for weight quantization—with a compressed weight tensor and a decompression
-        module. The decompression module ensures that the quantized weights are correctly
-        reconstructed at runtime using the calculated quantization parameters.
+        and calibration phases. It replaces the observer node with the quantized weight and a decompression
+        module.
 
         :param model: A `torch.fx.GraphModule` representing the statically traced model
                     with observer nodes attached and calibrated.
