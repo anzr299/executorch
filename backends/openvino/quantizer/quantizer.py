@@ -20,10 +20,6 @@ from executorch.backends.openvino.quantizer.observers.nncf_observers import (
     PTPerBlockParamObserver,
 )
 from nncf.common.graph.graph import NNCFGraph  # type: ignore[import-untyped]
-from nncf.common.quantization.structs import (  # type: ignore[import-untyped]
-    QuantizationScheme,
-    QuantizerConfig,
-)
 from nncf.quantization.quantize_model import (  # type: ignore[import-untyped]
     get_weight_compression_configuration,
 )
@@ -161,7 +157,7 @@ class OpenVINOQuantizer(Quantizer):
         graph: torch.fx.Graph,
         nncf_graph: NNCFGraph,
         node_vs_torch_annotation: DefaultDict[torch.fx.Node, QuantizationAnnotation],
-    ):
+    ) -> DefaultDict[torch.fx.Node, QuantizationAnnotation]:
         self._algo.set_backend_entity(model)
         nodes_to_compress = self._algo.get_nodes_to_compress(nncf_graph)
 
@@ -177,13 +173,15 @@ class OpenVINOQuantizer(Quantizer):
             )
             self._fill_torch_ao_annotation(edge_or_node, qspec, annotation)
 
+        return node_vs_torch_annotation
+
     def _annotate_post_training_quantization(
         self,
         model: torch.fx.GraphModule,
         graph: torch.fx.Graph,
         nncf_graph: NNCFGraph,
         node_vs_torch_annotation: DefaultDict[torch.fx.Node, QuantizationAnnotation],
-    ):
+    ) -> DefaultDict[torch.fx.Node, QuantizationAnnotation]:
         quantization_setup = self.get_nncf_quantization_setup(model, nncf_graph)
 
         for qp in quantization_setup.quantization_points.values():
@@ -199,6 +197,8 @@ class OpenVINOQuantizer(Quantizer):
                 quantization_setup,
                 node_vs_torch_annotation,
             )
+
+        return node_vs_torch_annotation
 
     def _annotate_quantization_point(
         self,
@@ -264,11 +264,11 @@ class OpenVINOQuantizer(Quantizer):
         )
 
         if self.mode in OpenVINOQuantizer.WEIGHTS_ONLY_COMPRESSION_MODES:
-            self._annotate_weight_compression(
+            node_vs_torch_annotation = self._annotate_weight_compression(
                 model, graph, nncf_graph, node_vs_torch_annotation
             )
         else:
-            self._annotate_post_training_quantization(
+            node_vs_torch_annotation = self._annotate_post_training_quantization(
                 model, graph, nncf_graph, node_vs_torch_annotation
             )
 
