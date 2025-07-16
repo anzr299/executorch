@@ -50,8 +50,7 @@ from torchao.quantization.pt2e._affine_quantization import _get_reduction_params
 
 class PTWeightCompressionObserverBase(ObserverBase, ABC):
     """
-    Implementation for a common NNCF observer base class. This is used to define common NNCF behaviour such as
-    decompression subgraph and Scale, weights calculations.
+    Base implementation of an NNCF observer that defines the rules for compressing layer weights into the OpenVINO representation.
     """
 
     def calculate_qparams(  # type: ignore[override]
