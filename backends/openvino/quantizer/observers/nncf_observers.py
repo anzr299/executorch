@@ -92,17 +92,6 @@ class PTWeightCompressionObserverBase(ObserverBase, ABC):
         module. The decompression module ensures that the quantized weights are correctly
         reconstructed at runtime using the calculated quantization parameters.
 
-        Steps performed:
-            1. Extracts the original (FP32) weight tensor from the graph.
-            2. Calculates the quantized weight, scale, and (optionally) zero point using
-            the configured quantization strategy.
-            3. Instantiates a decompressor module to reconstruct the original weights from the quantized values.
-            4. Packs the quantized weight into the format expected by the decompressor.
-            5. Replaces the observer node's constant with the packed quantized weight tensor.
-            6. Inserts the decompressor module after the constant node in the graph.
-            7. Updates the model to route all consumer nodes to use the decompressor output.
-            8. Removes the original observer node from the graph.
-
         :param model: A `torch.fx.GraphModule` representing the statically traced model
                     with observer nodes attached and calibrated.
         :param observer_node: The `torch.fx.Node` corresponding to the observer module for
