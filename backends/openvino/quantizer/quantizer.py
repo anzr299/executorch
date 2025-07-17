@@ -16,8 +16,8 @@ import nncf.experimental.torch.fx as nncf_fx  # type: ignore[import-untyped]
 
 import torch.fx
 from executorch.backends.openvino.quantizer.observers.nncf_observers import (
-    NNCFInt8observer,
-    PTPerBlockParamObserver,
+    NNCFINT4Observer,
+    NNCFINT8Observer,
 )
 from nncf.common.graph.graph import NNCFGraph  # type: ignore[import-untyped]
 from nncf.quantization.quantize_model import (  # type: ignore[import-untyped]
@@ -66,12 +66,12 @@ class OpenVINOQuantizer(Quantizer):
     optimally for the inference via OpenVINO.
     """
 
-    WEIGHTS_ONLY_COMPRESSION_MODES = [
+    WEIGHTS_ONLY_COMPRESSION_MODES = (
         QuantizationMode.INT4_ASYM_WC,
         QuantizationMode.INT4_SYM_WC,
         QuantizationMode.INT8_ASYM_WC,
         QuantizationMode.INT8_SYM_WC,
-    ]
+    )
 
     def __init__(
         self,
@@ -215,18 +215,18 @@ class OpenVINOQuantizer(Quantizer):
             edge_or_node, annotation = self._get_edge_or_node_and_annotation(
                 graph, nncf_graph, qp, node_vs_torch_annotation
             )
-            qspec = self._get_torch_ao_qspec_from_nncf_config(qp)
+            qspec: QuantizationSpecBase = self._get_torch_ao_qspec_from_nncf_config(qp)
             self._fill_torch_ao_annotation(edge_or_node, qspec, annotation)
 
         for quantizer_ids in quantization_setup.unified_scale_groups.values():
-            root_id = self._get_unified_scales_root_quantizer_id(
+            root_quantizer_id = self._get_unified_scales_root_quantizer_id(
                 nncf_graph, quantizer_ids, quantization_setup
             )
-            root_qp = quantization_setup.quantization_points[root_id]
+            root_qp = quantization_setup.quantization_points[root_quantizer_id]
 
             if any(
-                root_qp.qconfig != quantization_setup.quantization_points[qid].qconfig
-                for qid in quantizer_ids
+                root_qp.qconfig != quantization_setup.quantization_points[q_id].qconfig
+                for q_id in quantizer_ids
             ):
                 qps = [
                     quantization_setup.quantization_points[qid] for qid in quantizer_ids
@@ -236,17 +236,19 @@ class OpenVINOQuantizer(Quantizer):
                     f"{[(qp.insertion_point.__dict__, str(qp.qconfig)) for qp in qps]}"
                 )
 
-            root_node = nncf_fx.node_utils.get_graph_node_by_name(
+            root_target_node = nncf_fx.node_utils.get_graph_node_by_name(
                 graph, root_qp.insertion_point.target_node_name
             )
-            root_edge_or_node = self._get_edge_or_node(root_node, root_qp, nncf_graph)
+            root_edge_or_node = self._get_edge_or_node(
+                root_target_node, root_qp, nncf_graph
+            )
 
-            for qid in quantizer_ids:
-                if qid == root_id:
+            for quantizer_id in quantizer_ids:
+                if quantizer_id == root_quantizer_id:
                     continue
 
                 qspec = SharedQuantizationSpec(root_edge_or_node)  # type: ignore[assignment]
-                qp = quantization_setup.quantization_points[qid]
+                qp = quantization_setup.quantization_points[quantizer_id]
                 edge_or_node, annotation = self._get_edge_or_node_and_annotation(
                     graph, nncf_graph, qp, node_vs_torch_annotation
                 )
@@ -342,7 +344,6 @@ class OpenVINOQuantizer(Quantizer):
     ):
         """
         Returns the FX node corresponding to the weight tensor input of a given operator node.
-
         Uses the NNCF graph to identify which input port of the target node holds the weight.
         If multiple weight ports are present, a warning is issued and only the first one is used.
 
@@ -416,11 +417,15 @@ class OpenVINOQuantizer(Quantizer):
         weights_only: bool = False,
     ) -> QuantizationSpec:
         """
-        Retrieves the quantization configuration from the given quantization point and
-        converts it into a QuantizationSpec.
+        Returns a TorchAO QuantizationSpec based on NNCF quantization config and other arguments.
+        For weight-only quantization (e.g., INT4/INT8 compression), uses `qmode`, `group_size`,
+        and `weights_only`. For post-training quantization, only `qp` is required.
 
-        :param qp: An instance of QuantizationPointBase.
-        :return: A QuantizationSpec retrieved and converted from the quantization point.
+        :param qp: Quantization point from NNCF.
+        :param group_size: Group size for INT4 group-wise quantization.
+        :param qmode: Quantization mode for weight compression.
+        :param weights_only: If True, applies weight-only quantization logic.
+        :return: A TorchAO QuantizationSpec.
         """
         observer: Type[UniformQuantizationObserverBase]
 
@@ -437,14 +442,14 @@ class OpenVINOQuantizer(Quantizer):
                 extra_args["mapping_type"] = mapping_type
                 extra_args["target_dtype"] = torch.int8
                 extra_args["granularity"] = PerGroup(group_size=group_size)
-                observer = PTPerBlockParamObserver
+                observer = NNCFINT4Observer
                 quant_min = -8
                 quant_max = 7
                 dtype = torch.int8
                 channel_axis = 0
                 torch_qscheme = None
             else:
-                observer = NNCFInt8observer
+                observer = NNCFINT8Observer
                 quant_min = -128
                 quant_max = 127
                 dtype = torch.int8

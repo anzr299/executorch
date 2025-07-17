@@ -146,7 +146,7 @@ class PTWeightCompressionObserverBase(ObserverBase, ABC):
         pass
 
 
-class PTPerBlockParamObserver(PTWeightCompressionObserverBase):
+class NNCFINT4Observer(PTWeightCompressionObserverBase):
     """
     This class defines the behavior for INT4 Weight Compression which has per-group granularity.
     """
@@ -202,7 +202,7 @@ class PTPerBlockParamObserver(PTWeightCompressionObserverBase):
             )
 
 
-class NNCFInt8observer(PTWeightCompressionObserverBase):
+class NNCFINT8Observer(PTWeightCompressionObserverBase):
     """
     This class defines the behavior for Int8 WC which has per channel granularity.
     """
