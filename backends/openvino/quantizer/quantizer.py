@@ -49,6 +49,10 @@ class QuantizationMode(Enum):
     - INT8_SYM: INT8 symmetric quantization for both activations and weights.
     - INT8_MIXED: INT8 asymmetric quantization for activations, symmetric for weights.
     - INT8_TRANSFORMER: Optimized INT8 quantization for transformer-based models
+    - INT8WO_SYM: INT8 symmetric quantization for weights only.
+    - INT8WO_ASYM: INT8 asymmetric quantization for weights only.
+    - INT4WO_SYM: INT4 symmetric quantization for weights only.
+    - INT4WO_ASYM: INT4 asymmetric quantization for weights only
     """
 
     INT8_SYM = "int8_sym"
