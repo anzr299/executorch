@@ -27,7 +27,6 @@ from torchao.quantization.pt2e import (
     HistogramObserver,
     MappingType,
     PerChannelMinMaxObserver,
-    PerGroup,
     UniformQuantizationObserverBase,
 )
 from torchao.quantization.pt2e.quantizer import (
@@ -71,10 +70,10 @@ class OpenVINOQuantizer(Quantizer):
     """
 
     WEIGHTS_ONLY_COMPRESSION_MODES = (
-        QuantizationMode.INT4_ASYM_WC,
-        QuantizationMode.INT4_SYM_WC,
-        QuantizationMode.INT8_ASYM_WC,
-        QuantizationMode.INT8_SYM_WC,
+        QuantizationMode.INT4WO_SYM,
+        QuantizationMode.INT4WO_ASYM,
+        QuantizationMode.INT8WO_SYM,
+        QuantizationMode.INT8WO_ASYM,
     )
 
     def __init__(
@@ -439,28 +438,28 @@ class OpenVINOQuantizer(Quantizer):
         if weights_only:
             mapping_type = (
                 MappingType.SYMMETRIC
-                if qmode == QuantizationMode.INT4_SYM_WC
+                if qmode == QuantizationMode.INT4WO_SYM
                 else MappingType.ASYMMETRIC
             )
-            if qmode in [QuantizationMode.INT4_ASYM_WC, QuantizationMode.INT4_SYM_WC]:
+            if qmode in [QuantizationMode.INT4WO_SYM, QuantizationMode.INT4WO_SYM]:
                 extra_args["mapping_type"] = mapping_type
                 extra_args["target_dtype"] = torch.int8
                 extra_args["group_size"] = group_size
                 observer = INT4WeightObserver
-                quant_min = -8
-                quant_max = 7
+                quant_min = -8 if mapping_type == MappingType.SYMMETRIC else 0
+                quant_max = 7 if mapping_type == MappingType.SYMMETRIC else 15
                 dtype = torch.int8
                 channel_axis = 0
                 torch_qscheme = None
             else:
                 observer = INT8WeightObserver
-                quant_min = -128
-                quant_max = 127
+                quant_min = -128 if mapping_type == MappingType.SYMMETRIC else 0
+                quant_max = 1277 if mapping_type == MappingType.SYMMETRIC else 255
                 dtype = torch.int8
                 channel_axis = 0
                 torch_qscheme = (
                     torch.per_channel_symmetric
-                    if qmode == QuantizationMode.INT8_SYM_WC
+                    if qmode == QuantizationMode.INT8WO_SYM
                     else torch.per_channel_affine
                 )
 

@@ -9,7 +9,12 @@
 from abc import ABC, abstractmethod
 from typing import Optional, Tuple
 
+import nncf.torch.graph.operator_metatypes as om  # type: ignore[import-untyped]
+
 import torch
+from nncf.experimental.torch.fx.nncf_graph_builder import (  # type: ignore[import-untyped]
+    GraphConverter,
+)
 
 from nncf.experimental.torch.fx.node_utils import (  # type: ignore[import-untyped]
     get_tensor_constant_from_node,
@@ -21,6 +26,9 @@ from nncf.experimental.torch.fx.transformations import (  # type: ignore[import-
 from nncf.parameters import CompressWeightsMode  # type: ignore[import-untyped]
 from nncf.quantization.algorithms.weight_compression.config import (  # type: ignore[import-untyped]
     WeightCompressionConfig,
+)
+from nncf.quantization.algorithms.weight_compression.torch_fx_backend import (  # type: ignore[import-untyped]
+    FXWeightCompressionAlgoBackend,
 )
 from nncf.quantization.algorithms.weight_compression.weight_lowering import (  # type: ignore[import-untyped]
     do_integer_quantization,
@@ -37,21 +45,19 @@ from nncf.torch.quantization.layers import (  # type: ignore[import-untyped]
     INT8AsymmetricWeightsDecompressor,
     INT8SymmetricWeightsDecompressor,
 )
-from torchao.quantization.pt2e import (
-    MappingType,
-    ObserverBase,
-)
-from nncf.experimental.torch.fx.nncf_graph_builder import GraphConverter  # type: ignore[import-untyped]
-from nncf.quantization.algorithms.weight_compression.torch_fx_backend import FXWeightCompressionAlgoBackend  # type: ignore[import-untyped]       
-import nncf.torch.graph.operator_metatypes as om  # type: ignore[import-untyped]
+from torchao.quantization.pt2e import MappingType, ObserverBase
+
 
 class WeightObserverBase(ObserverBase, ABC):
     """
     Base implementation of an NNCF observer that defines the rules for compressing layer weights into the OpenVINO representation.
     """
-    
+
     def calculate_qparams(  # type: ignore[override]
-        self, weight: torch.Tensor, observer_node: torch.fx.Node, model: torch.fx.GraphModule
+        self,
+        weight: torch.Tensor,
+        observer_node: torch.fx.Node,
+        model: torch.fx.GraphModule,
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """
         Calculate quantization parameters such as scale, quantized weight and zero point.
@@ -60,11 +66,21 @@ class WeightObserverBase(ObserverBase, ABC):
         :return: quantization params quantized weight, scale and zero point
         """
         ndims = len(weight.size())
-        node_with_weight, weight_port_id = WeightObserverBase.get_node_with_weight_and_port_ids(observer_node, model)
-        _, node_metatype = GraphConverter.get_node_type_and_metatype(node_with_weight, model)
+        node_with_weight, weight_port_id = (
+            WeightObserverBase.get_node_with_weight_and_port_ids(observer_node, model)
+        )
+        _, node_metatype = GraphConverter.get_node_type_and_metatype(
+            node_with_weight, model
+        )
         # Special case where embedding metatype has to be mapped to AtenEmbedding metatype
-        node_metatype = om.PTAtenEmbeddingMetatype if node_metatype == om.PTEmbeddingMetatype else node_metatype
-        reduction_dims = FXWeightCompressionAlgoBackend.get_reduction_axes_from_node(node_metatype, weight_port_id, ndims)
+        node_metatype = (
+            om.PTAtenEmbeddingMetatype
+            if node_metatype == om.PTEmbeddingMetatype
+            else node_metatype
+        )
+        reduction_dims = FXWeightCompressionAlgoBackend.get_reduction_axes_from_node(
+            node_metatype, weight_port_id, ndims
+        )
         reduction_dims = tuple(reduction_dims)
 
         q_weight, scale, zp = do_integer_quantization(
@@ -77,7 +93,9 @@ class WeightObserverBase(ObserverBase, ABC):
         return x
 
     @staticmethod
-    def get_node_with_weight_and_port_ids(observer_node: torch.fx.Node, model: torch.fx.GraphModule) -> Tuple[torch.fx.Node, int]:
+    def get_node_with_weight_and_port_ids(
+        observer_node: torch.fx.Node, model: torch.fx.GraphModule
+    ) -> Tuple[torch.fx.Node, int]:
         """
         Returns the node which contains the weight and the weight port id.
 
@@ -86,7 +104,7 @@ class WeightObserverBase(ObserverBase, ABC):
         :return: Node which contains the weight (for eg. Linear node) and the port ID for the weight.
         """
         for node in model.graph.nodes:
-            if(observer_node in node.all_input_nodes):
+            if observer_node in node.all_input_nodes:
                 return node, node.all_input_nodes.index(observer_node)
         msg = f"Observer node {observer_node.name} has no consumer node"
         raise RuntimeError(msg)
@@ -107,7 +125,9 @@ class WeightObserverBase(ObserverBase, ABC):
         """
         weight_node = observer_node.args[0]
         original_weight = get_tensor_constant_from_node(weight_node, model)
-        q_weight, scale, zero_point = self.calculate_qparams(original_weight, observer_node, model)
+        q_weight, scale, zero_point = self.calculate_qparams(
+            original_weight, observer_node, model
+        )
 
         decompressor = self._create_decompressor(
             scale, zero_point, q_weight, original_weight
@@ -180,7 +200,7 @@ class INT4WeightObserver(WeightObserverBase):
         **kwargs,
     ) -> None:
         """
-        :param granularity: Granularity object which is expected to be only PerGroup. This contains the group_size information
+        :param group_size: Group size for group wise quantization. group_size=-1 means it is per-channel quantization.
         :param mapping_type: MappingType.SYMMETRIC and MappingType.ASYMMETRIC are supported types for this argument for symmetric or asymmetric quantization.
         :param target_dtype: target dtype for quantization such as int8, uint8, etc.
         """
@@ -193,9 +213,7 @@ class INT4WeightObserver(WeightObserverBase):
             if self.mapping_type == MappingType.ASYMMETRIC
             else CompressWeightsMode.INT4_SYM
         )
-        self.wc_config = WeightCompressionConfig(
-            mode=qmode, group_size=group_size
-        )
+        self.wc_config = WeightCompressionConfig(mode=qmode, group_size=group_size)
 
     def _create_decompressor(
         self,
@@ -216,6 +234,7 @@ class INT4WeightObserver(WeightObserverBase):
             return INT4SymmetricWeightsDecompressor(
                 scale, q_weight.shape, original_weight.shape, original_weight.dtype
             )
+
     def get_wc_config(self):
         return self.wc_config
 
@@ -262,6 +281,6 @@ class INT8WeightObserver(WeightObserverBase):
             )
         else:
             return INT8SymmetricWeightsDecompressor(scale, original_weight.dtype)
-    
+
     def get_wc_config(self):
         return self.wc_config
