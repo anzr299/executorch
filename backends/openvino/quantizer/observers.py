@@ -38,23 +38,20 @@ from nncf.torch.quantization.layers import (  # type: ignore[import-untyped]
     INT8SymmetricWeightsDecompressor,
 )
 from torchao.quantization.pt2e import (
-    get_block_size,
-    Granularity,
     MappingType,
     ObserverBase,
-    PerAxis,
-    PerGroup,
 )
-from torchao.quantization.pt2e._affine_quantization import _get_reduction_params
+from nncf.experimental.torch.fx.nncf_graph_builder import GraphConverter  # type: ignore[import-untyped]
+from nncf.quantization.algorithms.weight_compression.torch_fx_backend import FXWeightCompressionAlgoBackend  # type: ignore[import-untyped]       
+import nncf.torch.graph.operator_metatypes as om  # type: ignore[import-untyped]
 
-
-class PTWeightCompressionObserverBase(ObserverBase, ABC):
+class WeightObserverBase(ObserverBase, ABC):
     """
     Base implementation of an NNCF observer that defines the rules for compressing layer weights into the OpenVINO representation.
     """
-
+    
     def calculate_qparams(  # type: ignore[override]
-        self, weight: torch.Tensor
+        self, weight: torch.Tensor, observer_node: torch.fx.Node, model: torch.fx.GraphModule
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """
         Calculate quantization parameters such as scale, quantized weight and zero point.
@@ -62,14 +59,13 @@ class PTWeightCompressionObserverBase(ObserverBase, ABC):
         :param weight: FP weight to be used for calculating qparams.
         :return: quantization params quantized weight, scale and zero point
         """
-        self.granularity: Granularity
-        self.block_size = get_block_size(weight.shape, self.granularity)
-        _, reduction_dims = _get_reduction_params(self.block_size, weight.size())
-        reduction_dims = (
-            reduction_dims[0] - 1
-            if isinstance(self.granularity, PerGroup)
-            else reduction_dims
-        )
+        ndims = len(weight.size())
+        node_with_weight, weight_port_id = WeightObserverBase.get_node_with_weight_and_port_ids(observer_node, model)
+        _, node_metatype = GraphConverter.get_node_type_and_metatype(node_with_weight, model)
+        # Special case where embedding metatype has to be mapped to AtenEmbedding metatype
+        node_metatype = om.PTAtenEmbeddingMetatype if node_metatype == om.PTEmbeddingMetatype else node_metatype
+        reduction_dims = FXWeightCompressionAlgoBackend.get_reduction_axes_from_node(node_metatype, weight_port_id, ndims)
+        reduction_dims = tuple(reduction_dims)
 
         q_weight, scale, zp = do_integer_quantization(
             Tensor(weight), self.wc_config, reduction_axes=reduction_dims
@@ -79,6 +75,21 @@ class PTWeightCompressionObserverBase(ObserverBase, ABC):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return x
+
+    @staticmethod
+    def get_node_with_weight_and_port_ids(observer_node: torch.fx.Node, model: torch.fx.GraphModule) -> Tuple[torch.fx.Node, int]:
+        """
+        Returns the node which contains the weight and the weight port id.
+
+        :param observer_node: Observer node for the weight.
+        :param graph: The model.
+        :return: Node which contains the weight (for eg. Linear node) and the port ID for the weight.
+        """
+        for node in model.graph.nodes:
+            if(observer_node in node.all_input_nodes):
+                return node, node.all_input_nodes.index(observer_node)
+        msg = f"Observer node {observer_node.name} has no consumer node"
+        raise RuntimeError(msg)
 
     def convert(
         self, model: torch.fx.GraphModule, observer_node: torch.fx.Node
@@ -96,7 +107,7 @@ class PTWeightCompressionObserverBase(ObserverBase, ABC):
         """
         weight_node = observer_node.args[0]
         original_weight = get_tensor_constant_from_node(weight_node, model)
-        q_weight, scale, zero_point = self.calculate_qparams(original_weight)
+        q_weight, scale, zero_point = self.calculate_qparams(original_weight, observer_node, model)
 
         decompressor = self._create_decompressor(
             scale, zero_point, q_weight, original_weight
@@ -145,15 +156,24 @@ class PTWeightCompressionObserverBase(ObserverBase, ABC):
         """
         pass
 
+    @abstractmethod
+    def get_wc_config(self) -> WeightCompressionConfig:
+        """
+        Used to return the respective NNCF Weight Compression Config.
 
-class NNCFINT4Observer(PTWeightCompressionObserverBase):
+        :return: Weight compression config with the compression information such as qmode, group_size etc.
+        """
+        pass
+
+
+class INT4WeightObserver(WeightObserverBase):
     """
     This class defines the behavior for INT4 Weight Compression which has per-group granularity.
     """
 
     def __init__(
         self,
-        granularity: Granularity,
+        group_size: int,
         mapping_type: MappingType,
         target_dtype: torch.dtype,
         *args,
@@ -166,19 +186,15 @@ class NNCFINT4Observer(PTWeightCompressionObserverBase):
         """
         super().__init__(dtype=target_dtype, is_dynamic=False)
         self.wc_config = None
-        self.granularity: Granularity = granularity
         self.mapping_type = mapping_type
 
-        assert isinstance(
-            self.granularity, PerGroup
-        ), "Only PerGroup granularity is supported"
         qmode = (
             CompressWeightsMode.INT4_ASYM
             if self.mapping_type == MappingType.ASYMMETRIC
             else CompressWeightsMode.INT4_SYM
         )
         self.wc_config = WeightCompressionConfig(
-            mode=qmode, group_size=self.granularity.group_size
+            mode=qmode, group_size=group_size
         )
 
     def _create_decompressor(
@@ -200,9 +216,11 @@ class NNCFINT4Observer(PTWeightCompressionObserverBase):
             return INT4SymmetricWeightsDecompressor(
                 scale, q_weight.shape, original_weight.shape, original_weight.dtype
             )
+    def get_wc_config(self):
+        return self.wc_config
 
 
-class NNCFINT8Observer(PTWeightCompressionObserverBase):
+class INT8WeightObserver(WeightObserverBase):
     """
     This class defines the behavior for Int8 WC which has per channel granularity.
     """
@@ -223,7 +241,6 @@ class NNCFINT8Observer(PTWeightCompressionObserverBase):
         super().__init__(dtype=dtype, is_dynamic=False)
         self.wc_config = None
         self.qscheme = qscheme
-        self.ch_axis = ch_axis
 
         qmode = (
             CompressWeightsMode.INT8_SYM
@@ -231,7 +248,6 @@ class NNCFINT8Observer(PTWeightCompressionObserverBase):
             else CompressWeightsMode.INT8_ASYM
         )
         self.wc_config = WeightCompressionConfig(mode=qmode)
-        self.granularity: Granularity = PerAxis(axis=self.ch_axis)
 
     def _create_decompressor(
         self,
@@ -246,3 +262,6 @@ class NNCFINT8Observer(PTWeightCompressionObserverBase):
             )
         else:
             return INT8SymmetricWeightsDecompressor(scale, original_weight.dtype)
+    
+    def get_wc_config(self):
+        return self.wc_config

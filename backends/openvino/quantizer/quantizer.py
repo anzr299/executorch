@@ -15,9 +15,9 @@ import nncf.common.quantization as quantization  # type: ignore[import-untyped]
 import nncf.experimental.torch.fx as nncf_fx  # type: ignore[import-untyped]
 
 import torch.fx
-from executorch.backends.openvino.quantizer.observers.nncf_observers import (
-    NNCFINT4Observer,
-    NNCFINT8Observer,
+from executorch.backends.openvino.quantizer.observers import (
+    INT4WeightObserver,
+    INT8WeightObserver,
 )
 from nncf.common.graph.graph import NNCFGraph  # type: ignore[import-untyped]
 from nncf.quantization.quantize_model import (  # type: ignore[import-untyped]
@@ -54,10 +54,10 @@ class QuantizationMode(Enum):
     INT8_SYM = "int8_sym"
     INT8_MIXED = "int8_mixed"
     INT8_TRANSFORMER = "int8_transformer"
-    INT8_SYM_WC = "int8_sym_wc"
-    INT8_ASYM_WC = "int8_asym_wc"
-    INT4_SYM_WC = "int4_sym"
-    INT4_ASYM_WC = "int4_asym"
+    INT8WO_SYM = "int8wo_sym"
+    INT8WO_ASYM = "int8wo_asym"
+    INT4WO_SYM = "int4wo_sym"
+    INT4WO_ASYM = "int4wo_asym"
 
 
 class OpenVINOQuantizer(Quantizer):
@@ -441,15 +441,15 @@ class OpenVINOQuantizer(Quantizer):
             if qmode in [QuantizationMode.INT4_ASYM_WC, QuantizationMode.INT4_SYM_WC]:
                 extra_args["mapping_type"] = mapping_type
                 extra_args["target_dtype"] = torch.int8
-                extra_args["granularity"] = PerGroup(group_size=group_size)
-                observer = NNCFINT4Observer
+                extra_args["group_size"] = group_size
+                observer = INT4WeightObserver
                 quant_min = -8
                 quant_max = 7
                 dtype = torch.int8
                 channel_axis = 0
                 torch_qscheme = None
             else:
-                observer = NNCFINT8Observer
+                observer = INT8WeightObserver
                 quant_min = -128
                 quant_max = 127
                 dtype = torch.int8
