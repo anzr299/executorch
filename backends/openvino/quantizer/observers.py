@@ -46,7 +46,7 @@ from nncf.torch.quantization.layers import (  # type: ignore[import-untyped]
     INT8SymmetricWeightsDecompressor,
 )
 from torchao.quantization.pt2e import MappingType, ObserverBase
-
+from nncf.torch.model_graph_manager import get_weight_compression_reduction_axes
 
 class WeightObserverBase(ObserverBase, ABC):
     """
@@ -78,7 +78,7 @@ class WeightObserverBase(ObserverBase, ABC):
             if node_metatype == om.PTEmbeddingMetatype
             else node_metatype
         )
-        reduction_dims = FXWeightCompressionAlgoBackend.get_reduction_axes_from_node(
+        reduction_dims = get_weight_compression_reduction_axes(
             node_metatype, weight_port_id, ndims
         )
         reduction_dims = tuple(reduction_dims)
