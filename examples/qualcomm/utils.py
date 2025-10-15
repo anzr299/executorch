@@ -384,6 +384,7 @@ def build_executorch_binary(
     metadata=None,
     dump_intermediate_outputs=False,
     passes_job=None,
+    passes_dependency=None,
     qat_training_data=None,
     online_prepare=False,
     optrace=False,
@@ -406,6 +407,7 @@ def build_executorch_binary(
         metadata (dict, optional): An optional dictionary that maps each method name to a constant value in eager mode.
         dump_intermediate_outputs (bool, optional): Enables dumping model intermediate outputs.
         passes_job (OrderedDict, optional): Custom passes job in capture_program, users can enable/disable specific passes or modify their attributes.
+        passes_dependency (Dict, optional): A dictionary mapping each pass to its corresponding list of dependencies.
         qat_training_data (List[torch.Tensor], optional): A dataset for quantization aware training(QAT). Typically is a pair of tensors, such as [features, ground truth].
         online_prepare (bool, optional): Compose QNN graph on device if set to True.
         optrace (bool, optional): Enable optrace mode for performance analysis if set to True.
@@ -449,6 +451,7 @@ def build_executorch_binary(
             compile_spec,
             constant_methods=metadata,
             passes_job=passes_job,
+            dep_table=passes_dependency,
             skip_node_id_set=skip_node_id_set,
             skip_node_op_set=skip_node_op_set,
         )
@@ -915,24 +918,34 @@ def generate_inputs(dest_path: str, file_name: str, inputs=None):
     input_list_file = None
     input_files = []
 
+    def prepare_input_file(tensor, fd, index, sub_index):
+        # transform torch.Tensor to raw file
+        input_file_name = f"input_{index}_{sub_index}.raw"
+        input_file_path = f"{dest_path}/{input_file_name}"
+        if not isinstance(tensor, torch.Tensor):
+            tensor = torch.tensor(tensor)
+        tensor.detach().numpy().tofile(input_file_path)
+        input_files.append(input_file_path)
+        # prepare input_list
+        if sub_index > 0:
+            fd.write(" ")
+        fd.write(input_file_name)
+
     # Prepare input data
     if inputs is not None:
         input_list_file = f"{dest_path}/{file_name}"
         with open(input_list_file, "w") as f:
             for idx, data in enumerate(inputs):
-                for i, d in enumerate(data):
-                    # transform torch.Tensor to raw file
-                    file_name = f"input_{idx}_{i}.raw"
-                    file_path = f"{dest_path}/{file_name}"
-                    if not isinstance(d, torch.Tensor):
-                        d = torch.tensor(d)
-                    d.detach().numpy().tofile(file_path)
-                    input_files.append(file_path)
+                sub_index = 0
+                for d in data:
+                    if isinstance(d, (list, tuple)):
+                        for sub_d in d:
+                            prepare_input_file(sub_d, f, idx, sub_index)
+                            sub_index += 1
+                    else:
+                        prepare_input_file(d, f, idx, sub_index)
+                        sub_index += 1
 
-                    # prepare input_list
-                    if i > 0:
-                        f.write(" ")
-                    f.write(file_name)
                 f.write("\n")
 
     return input_list_file, input_files
