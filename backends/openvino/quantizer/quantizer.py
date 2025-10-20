@@ -193,6 +193,8 @@ class OpenVINOQuantizer(Quantizer):
         )
 
         for wc_param in all_wc_params:
+            if not wc_param.compression_config:
+                continue
             node_with_weight = wc_param.node_with_weight
             target_node = nncf_fx.node_utils.get_graph_node_by_name(
                 graph, node_with_weight.node_name
