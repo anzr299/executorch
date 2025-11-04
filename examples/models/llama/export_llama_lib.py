@@ -968,20 +968,21 @@ def _to_edge_and_lower_llama_openvino(
             token_list = [(pos, token,) for pos, token in enumerate(token_list)]
             return token_list
 
-        def transform_fn(curr_token: str, pos: int):
+        def transform_fn(token_pos_map: tuple[int, str]):
             # tokenized_text = tokenizer.encode(prompts, bos=False, eos=False)
             inputs = ()
             inputs = (
-                torch.tensor(curr_token).unsqueeze(0),
-                {"input_pos": torch.tensor([pos])},
+                torch.tensor(token_pos_map[1]).unsqueeze(0).unsqueeze(0),
+                {"input_pos": torch.tensor([token_pos_map[0]])},
             )
 
             return inputs
 
         builder_exported.calibration_data = get_calibration_data(builder_exported.pre_autograd_graph_module, tokenizer, builder_exported.calibration_data, builder_exported.max_seq_len)
 
-        builder_exported.pre_autograd_graph_module = nncf.compress_pt2e(
+        builder_exported.pre_autograd_graph_module = nncf.experimental.torch.fx.compress_pt2e(
             builder_exported.pre_autograd_graph_module,
+            quantizer=quantizers[0],
             dataset=nncf.Dataset(
                 builder_exported.calibration_data,
                 transform_func=transform_fn,
@@ -990,11 +991,11 @@ def _to_edge_and_lower_llama_openvino(
             awq=awq,
             scale_estimation=scale_estimation,
         )
-        builder = builder_exported.to_edge_transform_and_lower(
-            partitioners
-        )
+        builder = builder_exported
     else:
-        builder = builder_exported.pt2e_quantize(quantizers).to_edge_transform_and_lower(
+        builder = builder_exported.pt2e_quantize(quantizers)
+        
+    builder = builder.to_edge_transform_and_lower(
             partitioners
         )
 
