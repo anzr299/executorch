@@ -672,7 +672,9 @@ class LlmConfig:
         if hasattr(args, "nncf_awq"):
             llm_config.backend.openvino.nncf_awq = args.nncf_awq
         if hasattr(args, "nncf_scale_estimation"):
-            llm_config.backend.openvino.nncf_scale_estimation = args.nncf_scale_estimation
+            llm_config.backend.openvino.nncf_scale_estimation = (
+                args.nncf_scale_estimation
+            )
         if hasattr(args, "group_size") and args.group_size:
             llm_config.backend.openvino.nncf_compression_group_size = args.group_size
 

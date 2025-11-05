@@ -13,14 +13,14 @@ from typing import Any, Callable, DefaultDict, Dict, List, Optional, Tuple, Type
 import nncf  # type: ignore[import-untyped]
 import nncf.common.quantization as quantization  # type: ignore[import-untyped]
 import nncf.experimental.torch.fx as nncf_fx  # type: ignore[import-untyped]
-from nncf.common.graph.graph import NNCFNode
 
 import torch.fx
 from executorch.backends.openvino.quantizer.observers import (
     INT4WeightObserver,
     INT8WeightObserver,
 )
-from nncf.common.graph.graph import NNCFGraph  # type: ignore[import-untyped]
+from nncf.common.graph.graph import NNCFGraph, NNCFNode  # type: ignore[import-untyped]
+from nncf.experimental.common.tensor_statistics.statistics import WCTensorStatistic
 from nncf.quantization.algorithms.weight_compression.config import (  # type: ignore[import-untyped]
     WeightCompressionParameters,
 )
@@ -40,7 +40,6 @@ from torchao.quantization.pt2e.quantizer import (
     Quantizer,
     SharedQuantizationSpec,
 )
-from nncf.experimental.common.tensor_statistics.statistics import WCTensorStatistic
 
 QUANT_ANNOTATION_KEY = "quantization_annotation"
 
@@ -114,12 +113,14 @@ class OpenVINOQuantizer(Quantizer):
             )
         else:
             mode = mode.value.replace(
-                    "wo", ""
-                )  # Mode value has to match NNCF CompressWeightsMode
+                "wo", ""
+            )  # Mode value has to match NNCF CompressWeightsMode
             subset_size = 1  # Doesn't really matter in this case since it is data-free. Should just be +ve
-            self.weight_compression_configuration = get_weight_compression_configuration(
-                mode,
-                **kwargs,
+            self.weight_compression_configuration = (
+                get_weight_compression_configuration(
+                    mode,
+                    **kwargs,
+                )
             )
             _weight_compression_configuration = self.weight_compression_configuration
             self._algo = nncf.quantization.algorithms.weight_compression.algorithm.WeightCompression(
@@ -159,15 +160,17 @@ class OpenVINOQuantizer(Quantizer):
         self, model: torch.fx.GraphModule, nncf_graph: NNCFGraph
     ) -> quantization.quantizer_setup.SingleConfigQuantizerSetup:
         self._algo._set_backend_entity(model)
-        return self._algo.find_quantization_setup(model, nncf_graph)        
+        return self._algo.find_quantization_setup(model, nncf_graph)
 
     def get_nncf_weight_compression_parameters(
-        self, model: torch.fx.GraphModule, nncf_graph: NNCFGraph, 
-    ) -> tuple[list[WeightCompressionParameters], Optional[dict[str, WCTensorStatistic]]]:
+        self,
+        model: torch.fx.GraphModule,
+        nncf_graph: NNCFGraph,
+    ) -> tuple[
+        list[WeightCompressionParameters], Optional[dict[str, WCTensorStatistic]]
+    ]:
         self._algo.set_backend_entity(model)
-        return self._algo.get_weight_compression_parameters(
-            model, nncf_graph
-        )
+        return self._algo.get_weight_compression_parameters(model, nncf_graph)
 
     def _annotate_weight_compression(
         self,
