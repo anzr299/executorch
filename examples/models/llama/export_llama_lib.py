@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Callable, List, Optional, Union
 
 import torch
+from executorch.backends.openvino.quantization import apply_nncf_data_aware_compression
 
 from executorch.devtools.backend_debug import print_delegation_info
 from executorch.devtools.etrecord import generate_etrecord as generate_etrecord_func
@@ -920,74 +921,6 @@ def _to_edge_and_lower_llama_xnnpack(
     return builder.to_executorch(passes=additional_passes)
 
 
-def _use_nncf_compression(
-    builder_exported, quantizers, awq: bool, scale_estimation: bool
-):
-    try:
-        import nncf
-        from pytorch_tokenizers import get_tokenizer
-    except ImportError:
-        raise ImportError("Please install nncf via backends/openvino/requirements.txt")
-    tokenizer = get_tokenizer(builder_exported.tokenizer_path)
-
-    def get_calibration_data(
-        module: torch.fx.GraphModule, tokenizer, prompts: str, max_len: int
-    ):
-        # TODO: change criteria & support batch inputs if necessary
-        pos = torch.tensor(0, dtype=torch.int64)
-        token_list = tokenizer.encode(prompts, bos=True, eos=False)
-
-        with torch.no_grad():
-            while token_list[-1] != tokenizer.eos_id and pos < max_len:
-                logits = module(
-                    torch.full((1, 1), token_list[pos]),
-                    {"input_pos": torch.tensor((pos,))},
-                )
-                pos += 1
-                if pos >= len(token_list):
-                    token_list.append(torch.argmax(logits[:], dim=-1).item())
-        token_list = [
-            (
-                pos,
-                token,
-            )
-            for pos, token in enumerate(token_list)
-        ]
-        return token_list
-
-    def transform_fn(token_pos_map: tuple[int, str]):
-        # tokenized_text = tokenizer.encode(prompts, bos=False, eos=False)
-        inputs = ()
-        inputs = (
-            torch.tensor(token_pos_map[1]).unsqueeze(0).unsqueeze(0),
-            {"input_pos": torch.tensor([token_pos_map[0]])},
-        )
-
-        return inputs
-
-    builder_exported.calibration_data = get_calibration_data(
-        builder_exported.pre_autograd_graph_module,
-        tokenizer,
-        builder_exported.calibration_data,
-        builder_exported.max_seq_len,
-    )
-
-    builder_exported.pre_autograd_graph_module = (
-        nncf.experimental.torch.fx.compress_pt2e(
-            builder_exported.pre_autograd_graph_module,
-            quantizer=quantizers[0],
-            dataset=nncf.Dataset(
-                builder_exported.calibration_data,
-                transform_func=transform_fn,
-            ),
-            mode=nncf.CompressWeightsMode.INT4_SYM,
-            awq=awq,
-            scale_estimation=scale_estimation,
-        )
-    )
-    return builder_exported
-
-
 def _to_edge_and_lower_llama_openvino(
     builder_exported,
     modelname,
@@ -1009,7 +942,7 @@ def _to_edge_and_lower_llama_openvino(
         logging.info(f"--> {partitioner.__class__.__name__}")
 
     if awq or scale_estimation:
-        builder = _use_nncf_compression(
+        builder = apply_nncf_data_aware_compression(
             builder_exported, quantizers, awq, scale_estimation
         )
     else:
