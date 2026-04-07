@@ -119,6 +119,10 @@ def evaluate_exported_graph(
         # device=device,
     )
 
+    if use_cuda:
+        torch.cuda.empty_cache()
+        print(f"After empty_cache: Allocated={torch.cuda.memory_allocated()/1e9:.2f} GB, Reserved={torch.cuda.memory_reserved()/1e9:.2f} GB")
+
 
     logging.info("Running simple_evaluate...")
     with torch.no_grad():
