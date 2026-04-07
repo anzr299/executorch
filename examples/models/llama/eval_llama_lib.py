@@ -62,9 +62,12 @@ class GraphModuleEvalWrapper(EagerEvalWrapper):
                 # And we have to do single token prefill here.
                 result_logits = []
                 for pos in range(inps.shape[-1]):
-                    pos_tensor = torch.tensor([pos], dtype=torch.int64)
+                    pos_tensor = torch.tensor(
+                        [pos], dtype=torch.int64, device=self.device
+                    )
                     logits = self._model(
-                        inps[:, pos : pos + 1], {"input_pos": pos_tensor}
+                        inps[:, pos : pos + 1].to(device=self.device),
+                        {"input_pos": pos_tensor},
                     )
                     result_logits.append(logits)
                 if self._generate_full_logits:

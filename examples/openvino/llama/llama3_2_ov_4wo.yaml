@@ -4,18 +4,24 @@ base:
 model:
   use_kv_cache: true
   dtype_override: fp32
-  enable_dynamic_shape: false
+  enable_dynamic_shape: true
 
 quantization:
   pt2e_quantize: "openvino_4wo"
   group_size: 128
+  calibration_tasks: ["wikitext"]
 
 export:
   output_name: "llama3_2_ov.pte"
+  max_seq_length: 2049
+  max_context_length: 2049
 
 backend:
   openvino:
     enabled: true
+    openvino_awq: true
+    openvino_scale_estimation: true
 
 debug:
   verbose: false
+  generate_full_logits: true

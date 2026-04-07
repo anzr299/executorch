@@ -13,8 +13,10 @@ import argparse
 import copy
 import json
 import logging
+import os
 import re
 import shlex
+import sys
 from functools import partial
 from importlib import resources as _resources
 from json import JSONDecodeError
@@ -1003,6 +1005,13 @@ def _to_edge_and_lower_llama_openvino(
     builder = apply_nncf_data_aware_compression(
         builder_exported, quantizers[0], awq, scale_estimation
     )
+
+    compressed_export_path = os.environ.get("ET_COMPRESSED_EXPORT_PATH")
+    if compressed_export_path:
+        logging.info(f"Saving compressed model to {compressed_export_path}")
+        torch.save(builder.pre_autograd_graph_module, compressed_export_path)
+        logging.info("Compressed model saved. Exiting.")
+        sys.exit(0)
 
     builder = builder.to_edge_transform_and_lower(partitioners)
 
