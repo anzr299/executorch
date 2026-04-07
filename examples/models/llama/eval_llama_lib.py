@@ -85,8 +85,42 @@ class GraphModuleEvalWrapper(EagerEvalWrapper):
         else:
             return self._model(inps)
 
-    def _model_generate(self, context, max_length, eos_token_id):
-        raise Exception("unimplemented")
+    def _model_generate(self, context, max_length, eos_token_id, **kwargs):
+        if not self._use_kv_cache:
+            raise NotImplementedError("Generation requires use_kv_cache=True")
+
+        context = context.to(self.device)
+        generated = context.clone()
+        eos_token_id = kwargs.get("eos_token_id", None)
+
+        # Prefill: process the entire context at once
+        if self._enable_dynamic_shape:
+            pos_tensor = torch.tensor([0], dtype=torch.int64, device=self.device)
+            logits = self._model(context, {"input_pos": pos_tensor})
+            next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)
+            cur_pos = context.shape[1]
+        else:
+            # Feed tokens one by one for static shape
+            for pos in range(context.shape[1]):
+                pos_tensor = torch.tensor([pos], dtype=torch.int64, device=self.device)
+                logits = self._model(context[:, pos:pos+1], {"input_pos": pos_tensor})
+            next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)
+            cur_pos = context.shape[1]
+
+        generated = torch.cat([generated, next_token], dim=1)
+
+        # Decode: generate one token at a time
+        while generated.shape[1] < max_length:
+            pos_tensor = torch.tensor([cur_pos], dtype=torch.int64, device=self.device)
+            logits = self._model(next_token, {"input_pos": pos_tensor})
+            next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)
+            generated = torch.cat([generated, next_token], dim=1)
+            cur_pos += 1
+
+            if eos_token_id is not None and next_token.item() == eos_token_id:
+                break
+
+        return generated
 
 
 class ETPybindEvalWrapper(EagerEvalWrapper):

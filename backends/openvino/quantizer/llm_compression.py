@@ -119,7 +119,7 @@ def _build_nncf_calibration_dataset(
     dataset = load_dataset(**TASK_TO_HF_DATASET[calibration_task])
 
     if calibration_task == "gsm8k":
-        seq_len = seq_len or 256
+        seq_len = 256
         calibration_data = []
         for i in range(min(subset_size, len(dataset))):
             text = f"Question: {dataset[i]['question']}\nAnswer: {dataset[i]['answer']}"
