@@ -27,6 +27,11 @@ TASK_TO_HF_DATASET = {
         "name": "wikitext-2-raw-v1",
         "split": "train",
     },
+    "gsm8k": {
+        "path": "openai/gsm8k",
+        "name": "main",
+        "split": "train",
+    },
 }
 
 
@@ -112,16 +117,24 @@ def _build_nncf_calibration_dataset(
         )
 
     dataset = load_dataset(**TASK_TO_HF_DATASET[calibration_task])
-    calibration_data = get_calibration_data(
-        tokenizer,
-        dataset,
-        subset_size,
-        seq_len,
-    )
+
+    if calibration_task == "gsm8k":
+        seq_len = seq_len or 256
+        calibration_data = []
+        for i in range(min(subset_size, len(dataset))):
+            text = f"Question: {dataset[i]['question']}\nAnswer: {dataset[i]['answer']}"
+            enc = tokenizer.encode(text, bos=True, eos=False)[:seq_len]
+            calibration_data.append((torch.tensor([enc]), {'input_pos': torch.tensor([0])}))
+    else:
+        calibration_data = get_calibration_data(
+            tokenizer,
+            dataset,
+            subset_size,
+            seq_len,
+        )
 
     return nncf.Dataset(
         calibration_data,
-        # transform_func=transform_fn,
     )
 
 
@@ -143,12 +156,14 @@ def apply_nncf_data_aware_compression_from_builder(
     """
     tokenizer_path = builder.tokenizer_path
     tokenizer = get_tokenizer(tokenizer_path) if tokenizer_path is not None else None
+    calibration_task = "gsm8k"
     compressed_model = apply_nncf_data_aware_compression(
         model=builder.pre_autograd_graph_module,
         quantizer=quantizer,
         awq=awq,
         scale_estimation=scale_estimation,
         tokenizer=tokenizer,
+        calibration_task=calibration_task,
     )
     builder.pre_autograd_graph_module = compressed_model
     return builder
