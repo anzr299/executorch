@@ -1009,7 +1009,8 @@ def _to_edge_and_lower_llama_openvino(
     compressed_export_path = os.environ.get("ET_COMPRESSED_EXPORT_PATH")
     if compressed_export_path:
         logging.info(f"Saving compressed model to {compressed_export_path}")
-        torch.save(builder.pre_autograd_graph_module, compressed_export_path)
+        exported_program = builder._export(builder.pre_autograd_graph_module)
+        torch.export.save(exported_program, compressed_export_path)
         logging.info("Compressed model saved. Exiting.")
         sys.exit(0)
 
