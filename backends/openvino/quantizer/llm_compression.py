@@ -52,7 +52,7 @@ def get_calibration_data(
         i = random.randint(0, len(enc) - seqlen - 1)
         j = i + seqlen
         inp = enc[i:j]
-        dataset.extend([(inp, 0)])
+        dataset.extend([(torch.tensor([inp]), {'input_pos': torch.tensor([0])})])
     return dataset
 
 
@@ -101,7 +101,6 @@ def _build_nncf_calibration_dataset(
         raise ValueError(
             "Missing required calibration parameter(s): "
             + ", ".join(missing_params)
-            + ". Please provide calibration_task, tokenizer, and seq_len."
         )
 
     if not has_calibration_inputs:
@@ -198,9 +197,11 @@ def apply_nncf_data_aware_compression(
 
     # Since it is a static model, each input is a single token.
     total_calibration_dataset_size = subset_size * seq_len
-    compressed_model = nncf.experimental.torch.fx.compress_pt2e(
+    # compressed_model = nncf.experimental.torch.fx.compress_pt2e(
+    #   quantizer=quantizer,
+    compressed_model = nncf.compress_weights(
         model,
-        quantizer=quantizer,
+        mode=nncf.CompressWeightsMode.INT2_ASYM,
         dataset=nncf_calibration_data,
         awq=awq,
         scale_estimation=scale_estimation,
