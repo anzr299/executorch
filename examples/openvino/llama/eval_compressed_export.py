@@ -116,7 +116,7 @@ def evaluate_exported_graph(
         use_kv_cache=use_kv_cache,
         generate_full_logits=generate_full_logits,
         enable_dynamic_shape=enable_dynamic_shape,
-        device=device,
+        # device=device,
     )
 
 
